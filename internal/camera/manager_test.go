@@ -148,3 +148,52 @@ func TestDeviceManagerHotplug(t *testing.T) {
 		t.Fatal("expected removed event")
 	}
 }
+
+// TestManagerCloseStopsStreams ensures Close stops running streams and devices.
+func TestManagerCloseStopsStreams(t *testing.T) {
+	fake := &fakeAdapter{
+		devices: []DeviceInfo{{Serial: "A"}},
+	}
+	restoreAdapter := withFakeAdapter(t, fake)
+	defer restoreAdapter()
+
+	oldFactory := pipelineFactory
+	fp := newFakePipeline()
+	pipelineFactory = func(dev *sdk.Device) (streamPipeline, error) { return fp, nil }
+	defer func() { pipelineFactory = oldFactory }()
+
+	mgr, err := NewDeviceManager(context.Background())
+	if err != nil {
+		t.Fatalf("NewDeviceManager error: %v", err)
+	}
+
+	dev, err := mgr.Open("")
+	if err != nil {
+		t.Fatalf("Open error: %v", err)
+	}
+
+	stream := dev.Stream(StreamTypeDepth)
+	stream.provider = testProvider{}
+	stream.selectProfile = func(StreamConfig) (*sdk.StreamProfile, error) { return &sdk.StreamProfile{}, nil }
+
+	_ = stream.SetConfig(StreamConfig{Type: StreamTypeDepth, Enabled: true, Width: 2, Height: 2, FPS: 30, Format: PixelFormatDepthU16})
+
+	if err := stream.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	if !stream.IsRunning() {
+		t.Fatal("stream should be running before close")
+	}
+
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("manager close: %v", err)
+	}
+
+	if stream.IsRunning() {
+		t.Fatal("stream should be stopped after manager close")
+	}
+	if fp.stopCount == 0 {
+		t.Fatal("pipeline Stop should be called")
+	}
+}

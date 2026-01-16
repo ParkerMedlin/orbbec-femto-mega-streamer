@@ -188,3 +188,60 @@ func TestStreamSetConfig(t *testing.T) {
 		t.Fatalf("expected restart, start count=%d", fp.startCount)
 	}
 }
+
+// TestStreamStats verifies captured/dropped counters and latency calculation.
+func TestStreamStats(t *testing.T) {
+	oldFactory := pipelineFactory
+	fp := &fakePipeline{frames: make(chan frameSet, 32)}
+	pipelineFactory = func(dev *sdk.Device) (streamPipeline, error) { return fp, nil }
+	defer func() { pipelineFactory = oldFactory }()
+
+	dev := &Device{sdkDev: &sdk.Device{}, streams: make(map[StreamType]*Stream)}
+	cfg := StreamConfig{Type: StreamTypeDepth, Enabled: true, Width: 2, Height: 2, FPS: 30, Format: PixelFormatDepthU16}
+	stream := newStream(dev, cfg)
+	stream.provider = testProvider{}
+	stream.selectProfile = func(StreamConfig) (*sdk.StreamProfile, error) { return &sdk.StreamProfile{}, nil }
+
+	if err := stream.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	// Push more frames than the outgoing channel can hold to force drops.
+	for i := 0; i < 12; i++ {
+		raw := &fakeFrame{data: []byte{1, 2, 3, 4}, width: 2, height: 2, format: sdk.FormatY16, idx: uint64(i), ts: uint64(1000 + i)}
+		fp.frames <- &fakeFrameSet{depth: raw}
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if err := stream.Stop(); err != nil {
+		t.Fatalf("stop failed: %v", err)
+	}
+
+	// Drain any remaining frames.
+	for {
+		select {
+		case f := <-stream.Frames():
+			if f != nil {
+				f.Release()
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+
+	stats := stream.Stats()
+	if stats.Captured == 0 {
+		t.Fatalf("expected captured > 0, got %d", stats.Captured)
+	}
+	if stats.Dropped == 0 {
+		t.Fatalf("expected some dropped frames")
+	}
+	if stats.AvgLatency <= 0 {
+		t.Fatalf("expected avg latency to be positive, got %v", stats.AvgLatency)
+	}
+	if stats.LastFrameID == 0 {
+		t.Fatalf("expected last frame id to be recorded")
+	}
+}

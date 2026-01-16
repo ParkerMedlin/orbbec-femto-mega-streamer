@@ -48,14 +48,19 @@ var pipelineFactory func(dev *sdk.Device) (streamPipeline, error)
 type Stream struct {
 	device *Device
 
-	mu      sync.RWMutex
-	cfg     StreamConfig
-	frames  chan *Frame
-	pool    *framePool
-	running atomic.Bool
-	cancel  context.CancelFunc
-	done    chan struct{}
-	pipe    streamPipeline
+	mu            sync.RWMutex
+	cfg           StreamConfig
+	frames        chan *Frame
+	pool          *framePool
+	running       atomic.Bool
+	cancel        context.CancelFunc
+	done          chan struct{}
+	pipe          streamPipeline
+	captured      atomic.Uint64
+	dropped       atomic.Uint64
+	totalLatency  atomic.Int64
+	lastFrameID   atomic.Uint64
+	lastTimestamp atomic.Int64
 
 	// test hooks
 	provider      ProfileProvider
@@ -225,6 +230,7 @@ func (s *Stream) captureLoop(ctx context.Context) {
 		default:
 		}
 
+		start := time.Now()
 		fs, err := s.pipe.WaitForFrameSet(1000)
 		if err != nil || fs == nil {
 			continue
@@ -255,11 +261,15 @@ func (s *Stream) captureLoop(ctx context.Context) {
 			continue
 		}
 
+		latency := time.Since(start)
+
 		select {
 		case s.frames <- f:
+			s.recordCapture(f, latency)
 		default:
 			// Drop if channel full to avoid blocking capture loop.
 			f.Release()
+			s.recordDrop()
 		}
 	}
 }
@@ -332,4 +342,21 @@ func estimateBufferSize(cfg StreamConfig) int {
 		return 1024 * 1024 // 1MB default
 	}
 	return int(cfg.Width) * int(cfg.Height) * pixelBytes
+}
+
+func (s *Stream) recordCapture(f *Frame, latency time.Duration) {
+	if s == nil || f == nil {
+		return
+	}
+	s.captured.Add(1)
+	s.totalLatency.Add(latency.Nanoseconds())
+	s.lastFrameID.Store(f.FrameID)
+	s.lastTimestamp.Store(f.Timestamp)
+}
+
+func (s *Stream) recordDrop() {
+	if s == nil {
+		return
+	}
+	s.dropped.Add(1)
 }
