@@ -10,10 +10,12 @@ package sdk
 #include <stdlib.h>
 */
 import "C"
+import "runtime/cgo"
 
 // Context wraps ob_context.
 type Context struct {
-	ptr *C.ob_context
+	ptr            *C.ob_context
+	callbackHandle cgo.Handle
 }
 
 // DeviceList wraps ob_device_list.

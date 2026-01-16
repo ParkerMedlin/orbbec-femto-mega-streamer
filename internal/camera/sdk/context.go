@@ -38,6 +38,11 @@ func (c *Context) Close() error {
 	if c == nil || c.ptr == nil {
 		return nil
 	}
+	// Drop callback handle first to avoid dangling references.
+	if c.callbackHandle != 0 {
+		c.callbackHandle.Delete()
+		c.callbackHandle = 0
+	}
 	var err *C.ob_error
 	C.ob_delete_context(c.ptr, &err)
 	c.ptr = nil
